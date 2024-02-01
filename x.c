@@ -69,6 +69,10 @@ void kscrolldown(const Arg *);
 /* XEMBED messages */
 #define XEMBED_FOCUS_IN  4
 #define XEMBED_FOCUS_OUT 5
+#define XEMBED_EMBEDDED_NOTIFY 0
+#define XEMBED_WINDOW_ACTIVATE 1
+#define XEMBED_FOCUS_CURRENT   0
+
 
 /* macros */
 #define IS_SET(flag)		((win.mode & (flag)) != 0)
@@ -188,6 +192,9 @@ static void mousesel(XEvent *, int);
 static void mousereport(XEvent *);
 static char *kmap(KeySym, uint);
 static int match(uint, uint);
+static void createnotify(XEvent *e);
+static void destroynotify(XEvent *e);
+static void sendxembed(long msg, long detail, long d1, long d2);
 
 static void run(void);
 static void usage(void);
@@ -216,6 +223,8 @@ static void (*handler[LASTEvent])(XEvent *) = {
  */
 	[PropertyNotify] = propnotify,
 	[SelectionRequest] = selrequest,
+	[CreateNotify] = createnotify,
+	[DestroyNotify] = destroynotify,
 };
 
 /* Globals */
@@ -223,6 +232,7 @@ static DC dc;
 static XWindow xw;
 static XSelection xsel;
 static TermWindow win;
+static Window embed;
 
 /* Font Ring Cache */
 enum {
@@ -750,6 +760,55 @@ cresize(int width, int height)
 }
 
 void
+createnotify(XEvent *e)
+{
+	XWindowChanges wc;
+
+	if (embed || e->xcreatewindow.override_redirect)
+		return;
+
+	embed = e->xcreatewindow.window;
+
+	XReparentWindow(xw.dpy, embed, xw.win, 0, 0);
+	XSelectInput(xw.dpy, embed, PropertyChangeMask | StructureNotifyMask | EnterWindowMask);
+
+	XMapWindow(xw.dpy, embed);
+	sendxembed(XEMBED_EMBEDDED_NOTIFY, 0, xw.win, 0);
+
+	wc.width = win.w;
+	wc.height = win.h;
+	XConfigureWindow(xw.dpy, embed, CWWidth | CWHeight, &wc);
+
+	XSetInputFocus(xw.dpy, embed, RevertToParent, CurrentTime);
+}
+
+void
+destroynotify(XEvent *e)
+{
+	visibility(e);
+	if (embed == e->xdestroywindow.window) {
+		focus(e);
+	}
+}
+
+void
+sendxembed(long msg, long detail, long d1, long d2)
+{
+	XEvent e = { 0 };
+
+	e.xclient.window = embed;
+	e.xclient.type = ClientMessage;
+	e.xclient.message_type = xw.xembed;
+	e.xclient.format = 32;
+	e.xclient.data.l[0] = CurrentTime;
+	e.xclient.data.l[1] = msg;
+	e.xclient.data.l[2] = detail;
+	e.xclient.data.l[3] = d1;
+	e.xclient.data.l[4] = d2;
+	XSendEvent(xw.dpy, embed, False, NoEventMask, &e);
+}
+
+void
 xresize(int col, int row)
 {
 	win.tw = col * win.cw;
@@ -1170,7 +1229,8 @@ xinit(int cols, int rows)
 	xw.attrs.bit_gravity = NorthWestGravity;
 	xw.attrs.event_mask = FocusChangeMask | KeyPressMask | KeyReleaseMask
 		| ExposureMask | VisibilityChangeMask | StructureNotifyMask
-		| ButtonMotionMask | ButtonPressMask | ButtonReleaseMask;
+		| ButtonMotionMask | ButtonPressMask | ButtonReleaseMask
+		| SubstructureNotifyMask | SubstructureRedirectMask;
 	xw.attrs.colormap = xw.cmap;
 
 	if (!(opt_embed && (parent = strtol(opt_embed, NULL, 0))))
@@ -1720,6 +1780,11 @@ visibility(XEvent *ev)
 void
 unmap(XEvent *ev)
 {
+	if (embed == ev->xunmap.window) {
+		embed = 0;
+		XRaiseWindow(xw.dpy, xw.win);
+		XSetInputFocus(xw.dpy, xw.win, RevertToParent, CurrentTime);
+	}
 	win.mode &= ~MODE_VISIBLE;
 }
 
@@ -1771,6 +1836,13 @@ void
 focus(XEvent *ev)
 {
 	XFocusChangeEvent *e = &ev->xfocus;
+
+	if (embed && ev->type == FocusIn) {
+		XRaiseWindow(xw.dpy, embed);
+		XSetInputFocus(xw.dpy, embed, RevertToParent, CurrentTime);
+		sendxembed(XEMBED_FOCUS_IN, XEMBED_FOCUS_CURRENT, 0, 0);
+		sendxembed(XEMBED_WINDOW_ACTIVATE, 0, 0, 0);
+	}
 
 	if (e->mode == NotifyGrab)
 		return;
@@ -1910,8 +1982,16 @@ cmessage(XEvent *e)
 void
 resize(XEvent *e)
 {
+	XWindowChanges wc;
+
 	if (e->xconfigure.width == win.w && e->xconfigure.height == win.h)
 		return;
+
+	if (embed) {
+		wc.width = e->xconfigure.width;
+		wc.height = e->xconfigure.height;
+		XConfigureWindow(xw.dpy, embed, CWWidth | CWHeight, &wc);
+	}
 
 	cresize(e->xconfigure.width, e->xconfigure.height);
 }
