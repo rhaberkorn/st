@@ -195,6 +195,8 @@ static int match(uint, uint);
 static void createnotify(XEvent *e);
 static void destroynotify(XEvent *e);
 static void sendxembed(long msg, long detail, long d1, long d2);
+static Bool gettextprop(Window w, Atom atom, char *text, unsigned int size);
+static void updatetitle(Window win);
 
 static void run(void);
 static void usage(void);
@@ -529,6 +531,9 @@ propnotify(XEvent *e)
 			(xpev->atom == XA_PRIMARY ||
 			 xpev->atom == clipboard)) {
 		selnotify(e);
+	} else if (xpev->state != PropertyDelete && xpev->atom == XA_WM_NAME &&
+	           embed == xpev->window) {
+		updatetitle(embed);
 	}
 }
 
@@ -772,6 +777,8 @@ createnotify(XEvent *e)
 	XReparentWindow(xw.dpy, embed, xw.win, 0, 0);
 	XSelectInput(xw.dpy, embed, PropertyChangeMask | StructureNotifyMask | EnterWindowMask);
 
+	updatetitle(embed);
+
 	XMapWindow(xw.dpy, embed);
 	sendxembed(XEMBED_EMBEDDED_NOTIFY, 0, xw.win, 0);
 
@@ -806,6 +813,44 @@ sendxembed(long msg, long detail, long d1, long d2)
 	e.xclient.data.l[3] = d1;
 	e.xclient.data.l[4] = d2;
 	XSendEvent(xw.dpy, embed, False, NoEventMask, &e);
+}
+
+Bool
+gettextprop(Window w, Atom atom, char *text, unsigned int size)
+{
+	char **list = NULL;
+	int n;
+	XTextProperty name;
+
+	if (!text || size == 0)
+		return False;
+
+	text[0] = '\0';
+	XGetTextProperty(xw.dpy, w, &name, atom);
+	if (!name.nitems)
+		return False;
+
+	if (name.encoding == XA_STRING) {
+		strncpy(text, (char *)name.value, size - 1);
+	} else if (XmbTextPropertyToTextList(xw.dpy, &name, &list, &n) >= Success
+	           && n > 0 && *list) {
+		strncpy(text, *list, size - 1);
+		XFreeStringList(list);
+	}
+	text[size - 1] = '\0';
+	XFree(name.value);
+
+	return True;
+}
+
+void
+updatetitle(Window win)
+{
+	char name[256];
+
+	if (!gettextprop(win, xw.netwmname, name, sizeof(name)))
+		gettextprop(win, XA_WM_NAME, name, sizeof(name));
+	xsettitle(name);
 }
 
 void
