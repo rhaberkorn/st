@@ -197,6 +197,7 @@ static void destroynotify(XEvent *e);
 static void sendxembed(long msg, long detail, long d1, long d2);
 static Bool gettextprop(Window w, Atom atom, char *text, unsigned int size);
 static void updatetitle(Window win);
+static void updateicon(Window win);
 
 static void run(void);
 static void usage(void);
@@ -525,6 +526,7 @@ propnotify(XEvent *e)
 {
 	XPropertyEvent *xpev;
 	Atom clipboard = XInternAtom(xw.dpy, "CLIPBOARD", 0);
+	Atom wmicon = XInternAtom(xw.dpy, "_NET_WM_ICON", 0);
 
 	xpev = &e->xproperty;
 	if (xpev->state == PropertyNewValue &&
@@ -534,6 +536,9 @@ propnotify(XEvent *e)
 	} else if (xpev->state != PropertyDelete && xpev->atom == XA_WM_NAME &&
 	           embed == xpev->window) {
 		updatetitle(embed);
+	} else if ((xpev->atom == wmicon || xpev->state == PropertyNewValue && xpev->atom == XA_WM_HINTS) &&
+	           embed == xpev->window) {
+		updateicon(embed);
 	}
 }
 
@@ -778,6 +783,7 @@ createnotify(XEvent *e)
 	XSelectInput(xw.dpy, embed, PropertyChangeMask | StructureNotifyMask | EnterWindowMask);
 
 	updatetitle(embed);
+	updateicon(embed);
 
 	XMapWindow(xw.dpy, embed);
 	sendxembed(XEMBED_EMBEDDED_NOTIFY, 0, xw.win, 0);
@@ -851,6 +857,46 @@ updatetitle(Window win)
 	if (!gettextprop(win, xw.netwmname, name, sizeof(name)))
 		gettextprop(win, XA_WM_NAME, name, sizeof(name));
 	xsettitle(name);
+}
+
+void
+updateicon(Window win)
+{
+	Atom ret_type;
+	XWMHints *wmh, *cwmh;
+	int ret_format;
+	unsigned long ret_nitems, ret_nleft;
+	long offset = 0L;
+	unsigned char *data = NULL;
+
+	Atom wmicon = XInternAtom(xw.dpy, "_NET_WM_ICON", 0);
+	XDeleteProperty(xw.dpy, xw.win, wmicon);
+
+	wmh = XGetWMHints(xw.dpy, xw.win);
+	wmh->flags &= ~(IconPixmapHint | IconMaskHint);
+	wmh->icon_pixmap = wmh->icon_mask = None;
+
+	if (win) {
+		if (XGetWindowProperty(xw.dpy, win, wmicon, offset, LONG_MAX, False,
+		                       XA_CARDINAL, &ret_type, &ret_format, &ret_nitems,
+		                       &ret_nleft, &data) == Success &&
+		    ret_type == XA_CARDINAL && ret_format == 32) {
+			XChangeProperty(xw.dpy, xw.win, wmicon, XA_CARDINAL, 32,
+			                PropModeReplace, data, ret_nitems);
+		} else if ((cwmh = XGetWMHints(xw.dpy, win)) && cwmh->flags & IconPixmapHint) {
+			wmh->flags |= IconPixmapHint;
+			wmh->icon_pixmap = cwmh->icon_pixmap;
+			if (cwmh->flags & IconMaskHint) {
+				wmh->flags |= IconMaskHint;
+				wmh->icon_mask = cwmh->icon_mask;
+			}
+			XFree(cwmh);
+		}
+	}
+
+	XSetWMHints(xw.dpy, xw.win, wmh);
+	XFree(wmh);
+	XFree(data);
 }
 
 void
@@ -1826,6 +1872,9 @@ void
 unmap(XEvent *ev)
 {
 	if (embed == ev->xunmap.window) {
+		/* FIXME: restore the previous window title? */
+		/* FIXME: Does not remove the icon */
+		updateicon(0);
 		embed = 0;
 		XRaiseWindow(xw.dpy, xw.win);
 		XSetInputFocus(xw.dpy, xw.win, RevertToParent, CurrentTime);
